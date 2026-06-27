@@ -1,0 +1,281 @@
+rules_version = '2';
+
+// ===============================================================
+// Assumed Data Model
+// ===============================================================
+//
+// All data is private and scoped by the authenticated user's UID.
+//
+// users/{userId}/transactions/{transactionId}
+//   type: string enum (required)
+//   title: string, 1-120 chars (required)
+//   category: string, 1-60 chars (required)
+//   mindset: string enum (required)
+//   amount: number, > 0 and <= 1 quadrillion (required)
+//   date: timestamp (required)
+//   note: string, <= 500 chars (optional)
+//   createdAt: timestamp, immutable (required)
+//
+// users/{userId}/budgets/{budgetId}
+//   category: string, 1-60 chars (required)
+//   month: string YYYY-MM (required)
+//   mindset: string enum (required)
+//   limit: number, > 0 and <= 1 quadrillion (required)
+//   createdAt: timestamp, immutable (required)
+//
+// users/{userId}/goals/{goalId}
+//   title: string, 1-120 chars (required)
+//   target: number, > 0 and <= 1 quadrillion (required)
+//   current: number, 0-target (required)
+//   deadline: timestamp (required)
+//   createdAt: timestamp, immutable (required)
+//
+// users/{userId}/wishlistGroups/{groupId}
+//   title: string, 1-120 chars (required)
+//   description: string, <= 500 chars (required, may be empty)
+//   color: six-digit hex string (required)
+//   deadline: timestamp (required)
+//   createdAt: timestamp, immutable (required)
+//
+// users/{userId}/wishlistGroups/{groupId}/items/{itemId}
+//   title: string, 1-120 chars (required)
+//   category: string, 1-60 chars (required)
+//   priority: low|medium|high (required)
+//   targetAmount: number, 0-1 quadrillion (required)
+//   deadline: timestamp (required)
+//   note: string, <= 500 chars (optional)
+//   completed: boolean (required)
+//   createdAt: timestamp, immutable (required)
+//
+// ===============================================================
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+
+    function uidUnchanged(data) {
+      return !data.keys().hasAny(['uid']) || data.uid == request.auth.uid;
+    }
+
+    function uidNotModified() {
+      return !request.resource.data.keys().hasAny(['uid']) ||
+        (resource.data.keys().hasAny(['uid']) &&
+          request.resource.data.uid == resource.data.uid);
+    }
+
+    function validString(value, minLength, maxLength) {
+      return value is string &&
+        value.size() >= minLength &&
+        value.size() <= maxLength;
+    }
+
+    function validOptionalString(data, field, maxLength) {
+      return !data.keys().hasAny([field]) ||
+        (data[field] is string && data[field].size() <= maxLength);
+    }
+
+    function validAmount(value, allowZero) {
+      return value is number &&
+        value <= 1000000000000000 &&
+        (allowZero ? value >= 0 : value > 0);
+    }
+
+    function recentCreatedAt(value) {
+      return value is timestamp &&
+        value > request.time - duration.value(5, 'm') &&
+        value <= request.time;
+    }
+
+    function validMindset(value) {
+      return value in ['need', 'want', 'future', 'debt'];
+    }
+
+    function validMonth(value) {
+      return value is string && value.matches('^\\d{4}-\\d{2}$');
+    }
+
+    function wishlistGroupExists(userId, groupId) {
+      return exists(
+        /databases/$(database)/documents/users/$(userId)/wishlistGroups/$(groupId)
+      );
+    }
+
+    function isValidTransaction(data) {
+      return data.keys().hasAll([
+          'type', 'title', 'category', 'mindset', 'amount', 'date', 'createdAt'
+        ]) &&
+        data.keys().hasOnly([
+          'type', 'title', 'category', 'mindset', 'amount', 'date', 'note', 'createdAt'
+        ]) &&
+        data.type in ['income', 'expense', 'saving', 'investment', 'debt'] &&
+        validString(data.title, 1, 120) &&
+        validString(data.category, 1, 60) &&
+        validMindset(data.mindset) &&
+        validAmount(data.amount, false) &&
+        data.date is timestamp &&
+        validOptionalString(data, 'note', 500) &&
+        data.createdAt is timestamp;
+    }
+
+    function isValidBudget(data) {
+      return data.keys().hasAll(['category', 'month', 'mindset', 'limit', 'createdAt']) &&
+        data.keys().hasOnly(['category', 'month', 'mindset', 'limit', 'createdAt']) &&
+        validString(data.category, 1, 60) &&
+        validMonth(data.month) &&
+        validMindset(data.mindset) &&
+        validAmount(data.limit, false) &&
+        data.createdAt is timestamp;
+    }
+
+    function isValidGoal(data) {
+      return data.keys().hasAll(['title', 'target', 'current', 'deadline', 'createdAt']) &&
+        data.keys().hasOnly(['title', 'target', 'current', 'deadline', 'createdAt']) &&
+        validString(data.title, 1, 120) &&
+        validAmount(data.target, false) &&
+        validAmount(data.current, true) &&
+        data.current <= data.target &&
+        data.deadline is timestamp &&
+        data.createdAt is timestamp;
+    }
+
+    function isValidWishlistGroup(data) {
+      return data.keys().hasAll([
+          'title', 'description', 'color', 'deadline', 'createdAt'
+        ]) &&
+        data.keys().hasOnly([
+          'title', 'description', 'color', 'deadline', 'createdAt'
+        ]) &&
+        validString(data.title, 1, 120) &&
+        validString(data.description, 0, 500) &&
+        data.color is string &&
+        data.color.matches('^#[0-9a-fA-F]{6}$') &&
+        data.deadline is timestamp &&
+        data.createdAt is timestamp;
+    }
+
+    function isValidWishlistItem(data) {
+      return data.keys().hasAll([
+          'title', 'category', 'priority', 'targetAmount', 'deadline', 'completed', 'createdAt'
+        ]) &&
+        data.keys().hasOnly([
+          'title', 'category', 'priority', 'targetAmount', 'deadline', 'note', 'completed', 'createdAt'
+        ]) &&
+        validString(data.title, 1, 120) &&
+        validString(data.category, 1, 60) &&
+        data.priority in ['low', 'medium', 'high'] &&
+        validAmount(data.targetAmount, true) &&
+        data.deadline is timestamp &&
+        validOptionalString(data, 'note', 500) &&
+        data.completed is bool &&
+        data.createdAt is timestamp;
+    }
+
+    match /users/{userId}/transactions/{transactionId} {
+      allow read: if isOwner(userId);
+      allow create: if isOwner(userId) &&
+        uidUnchanged(request.resource.data) &&
+        isValidTransaction(request.resource.data) &&
+        recentCreatedAt(request.resource.data.createdAt);
+      allow update: if isOwner(userId) &&
+        uidNotModified() &&
+        isValidTransaction(request.resource.data) &&
+        request.resource.data.createdAt == resource.data.createdAt &&
+        request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+          'type', 'title', 'category', 'mindset', 'amount', 'date', 'note'
+        ]);
+      allow delete: if isOwner(userId);
+    }
+
+    match /users/{userId}/budgets/{budgetId} {
+      allow read: if isOwner(userId);
+      allow create: if isOwner(userId) &&
+        uidUnchanged(request.resource.data) &&
+        isValidBudget(request.resource.data) &&
+        recentCreatedAt(request.resource.data.createdAt);
+      allow update: if isOwner(userId) &&
+        uidNotModified() &&
+        isValidBudget(request.resource.data) &&
+        request.resource.data.createdAt == resource.data.createdAt &&
+        request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+          'category', 'month', 'mindset', 'limit'
+        ]);
+      allow delete: if isOwner(userId);
+    }
+
+    match /users/{userId}/goals/{goalId} {
+      allow read: if isOwner(userId);
+      allow create: if isOwner(userId) &&
+        uidUnchanged(request.resource.data) &&
+        isValidGoal(request.resource.data) &&
+        recentCreatedAt(request.resource.data.createdAt);
+      allow update: if isOwner(userId) &&
+        uidNotModified() &&
+        isValidGoal(request.resource.data) &&
+        request.resource.data.createdAt == resource.data.createdAt &&
+        request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+          'title', 'target', 'current', 'deadline'
+        ]);
+      allow delete: if isOwner(userId);
+    }
+
+    match /users/{userId}/wishlist/{wishlistId} {
+      allow read: if isOwner(userId);
+      allow create: if isOwner(userId) &&
+        uidUnchanged(request.resource.data) &&
+        isValidWishlistItem(request.resource.data) &&
+        recentCreatedAt(request.resource.data.createdAt);
+      allow update: if isOwner(userId) &&
+        uidNotModified() &&
+        isValidWishlistItem(request.resource.data) &&
+        request.resource.data.createdAt == resource.data.createdAt &&
+        request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+          'title', 'category', 'priority', 'targetAmount', 'deadline', 'note', 'completed'
+        ]);
+      allow delete: if isOwner(userId);
+    }
+
+    match /users/{userId}/wishlistGroups/{groupId} {
+      allow read: if isOwner(userId);
+      allow create: if isOwner(userId) &&
+        uidUnchanged(request.resource.data) &&
+        isValidWishlistGroup(request.resource.data) &&
+        recentCreatedAt(request.resource.data.createdAt);
+      allow update: if isOwner(userId) &&
+        uidNotModified() &&
+        isValidWishlistGroup(request.resource.data) &&
+        request.resource.data.createdAt == resource.data.createdAt &&
+        request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+          'title', 'description', 'color', 'deadline'
+        ]);
+      allow delete: if isOwner(userId);
+
+      match /items/{itemId} {
+        allow read: if isOwner(userId) && wishlistGroupExists(userId, groupId);
+        allow create: if isOwner(userId) &&
+          wishlistGroupExists(userId, groupId) &&
+          uidUnchanged(request.resource.data) &&
+          isValidWishlistItem(request.resource.data) &&
+          recentCreatedAt(request.resource.data.createdAt);
+        allow update: if isOwner(userId) &&
+          wishlistGroupExists(userId, groupId) &&
+          uidNotModified() &&
+          isValidWishlistItem(request.resource.data) &&
+          request.resource.data.createdAt == resource.data.createdAt &&
+          request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+            'title', 'category', 'priority', 'targetAmount', 'deadline', 'note', 'completed'
+          ]);
+        allow delete: if isOwner(userId) && wishlistGroupExists(userId, groupId);
+      }
+    }
+
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

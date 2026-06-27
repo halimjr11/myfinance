@@ -1,0 +1,22 @@
+{
+  "firestore": {
+    "rules": "firestore.rules"
+  },
+  "auth": {
+    "authorizedDomains": [
+      "localhost",
+      "127.0.0.1"
+    ],
+    "providers": {
+      "emailPassword": true,
+      "googleSignIn": {
+        "oAuthBrandDisplayName": "MyFinance",
+        "supportEmail": "halim.dev26@gmail.com",
+        "authorizedRedirectUris": [
+          "http://localhost",
+          "http://127.0.0.1"
+        ]
+      }
+    }
+  }
+}
